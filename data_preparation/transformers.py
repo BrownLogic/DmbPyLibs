@@ -6,6 +6,8 @@ import pandas as pd
 from sklearn.base import TransformerMixin
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
+from sklearn.pipeline import FeatureUnion, Pipeline
+import json
 
 
 class NaNCountTransformer(TransformerMixin):
@@ -122,3 +124,45 @@ class LetterCountTransformer(TransformerMixin):
         if isinstance(some_string, basestring):
             return len(some_string)
         return np.NaN
+
+
+def encode_transformer(label, transformer):
+    """
+    Returns a string representation of the transformer.  Nested transformers (as in the case of pipelines, FeatureUnions, etc) are iteratively parsed into a tree representation which is then converted to JSON.
+    """
+    transformer_tree = create_transformer_tree(label, transformer)
+    return json.dumps(transformer_tree, default=lambda x: str(x), sort_keys=True, indent=4)
+
+
+def create_transformer_tree(label, transformer):
+    """
+    Takes either a pipeline or a gridsearch transformer and converts it
+    the labels have an A, B, C so that they can be easily ordered
+    ['A. label'] - the label of the parameters (or the root label
+    ['B. transformer'] - the transformer itself
+    ['C. children'] - list of children transformers
+    ['D. vars'] - the variable output (parameter list)
+    """
+    ret = {}
+    ret['A. label'] = label
+    ret['B. transformer'] = type(transformer)
+
+    child_enumerate = None
+    if hasattr(transformer, 'transformer_list'):
+        child_enumerate = enumerate(transformer.transformer_list)
+    elif hasattr(transformer, 'steps'):
+        child_enumerate = enumerate(transformer.steps)
+
+    if child_enumerate:
+        ret['C. children'] = []
+        for order, (next_label, inner_transformer) in child_enumerate:
+            ret['C. children'].append(create_transformer_tree(next_label, inner_transformer))
+    else:
+        ret['D. vars'] = vars(transformer)
+
+
+    if hasattr(transformer, 'estimator'):
+        # Then we are probably in grid search:  Recursively call on the estimator
+        ret['E. Estimator'] = create_transformer_tree('{} nested_estimator'.format(label), transformer.estimator)
+
+    return ret

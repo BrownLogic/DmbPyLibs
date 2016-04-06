@@ -8,7 +8,7 @@ import gzip
 from database import login_info
 from datetime import datetime
 import os
-
+from data_preparation import transformers
 
 _FILE_NAME_TEMPLATE = "R{run_id:06d}_{time_stamp:%Y%m%d_%H%M%S}_{type}_{obj_num:02d}"
 _RUN_TIME_STAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
@@ -174,7 +174,7 @@ class PersistModel:
 
         sql = ' SELECT score_type, score' \
               ' FROM model_scores ' \
-              ' WHERE run_id = {} '
+              ' WHERE run_id = {} '.format(self.run_id)
 
         cursor = self._db.cursor()
         cursor.execute(sql)
@@ -261,6 +261,14 @@ class PersistModel:
         self._save_zipped_pickle(obj, self._get_file_path(file_name))
         self._save_object_context(sequence_num, obj_type, obj, file_name)
 
+    def _get_string_representation_object_info(self, obj_type, obj):
+        if obj_type in [FileObjectType.predictor_model, FileObjectType.feature_model]:
+            ret = transformers.encode_transformer(obj_type, obj)
+        else:
+            ret = type(obj)
+
+        return ret
+
     def _save_object_context(self, sequence_num, obj_type, obj, file_name):
         """
         Adds a record to the database and returns the model_run_object_id
@@ -269,7 +277,7 @@ class PersistModel:
               " ( run_id, sequence_num, obj_type, object_info, file_name ) " \
               " VALUES (%s, %s, %s, %s, %s)"
         cursor = self._db.cursor()
-        cursor.execute(sql, [self.run_id, sequence_num, obj_type, str(obj), file_name])
+        cursor.execute(sql, [self.run_id, sequence_num, obj_type, self._get_string_representation_object_info(obj_type, obj), file_name])
         model_run_object_id = cursor.lastrowid
         cursor.close()
         self._db.commit()
@@ -290,8 +298,6 @@ class PersistModel:
 
 
     # todo: Generalize submission save so that it doesn't rely on Pandas
-
-
     def _save_score(self, score_type, score):
         """
         Adds a record to the database and returns the score_id
@@ -300,7 +306,7 @@ class PersistModel:
               " (run_id, score_type, score ) " \
               " VALUES (%s, %s, %s)"
         cursor = self._db.cursor()
-        cursor.execute(sql, [self.run_id, score_type, score])
+        cursor.execute(sql, [self.run_id, score_type, round(score,8)])
         score_id = cursor.lastrowid
         cursor.close()
         self._db.commit()
@@ -366,4 +372,3 @@ class PersistModel:
         :return DateTime instantiation of timestamp.
         """
         return datetime.strptime(run_time_stamp, _RUN_TIME_STAMP_FORMAT)
-

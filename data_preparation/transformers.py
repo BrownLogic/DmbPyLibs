@@ -86,10 +86,10 @@ class MultiColumnLabelEncoder(TransformerMixin):
     def __init__(self,columns = None):
         self.columns = columns # array of column names to encode
 
-    def fit(self,X,y=None):
+    def fit(self, X, y=None, **fit_params):
         return self # not relevant here
 
-    def transform(self,X):
+    def transform(self, X, **transform_params):
         """
         Transforms columns of X specified in self.columns using
         LabelEncoder(). If no columns specified, transforms all
@@ -125,6 +125,18 @@ class LetterCountTransformer(TransformerMixin):
             return len(some_string)
         return np.NaN
 
+class DenseTransformer(TransformerMixin):
+    """
+    Converts a sparse matrix to a dense one
+    tip o'the hat to https://github.com/davismj/receipt-classifier/blob/master/DenseTransformer.py
+    """
+
+    def transform(self, X, **transform_params):
+        return X.todense()
+
+    def fit(self, X, y=None, **fit_params):
+        return self
+
 
 def encode_transformer(label, transformer):
     """
@@ -158,7 +170,11 @@ def create_transformer_tree(label, transformer):
         for order, (next_label, inner_transformer) in child_enumerate:
             ret['C. children'].append(create_transformer_tree(next_label, inner_transformer))
     else:
-        ret['D. vars'] = vars(transformer)
+        the_vars = vars(transformer)
+        if len(str(the_vars)) <= (10 * 1024 * 1024): #10 MB.  This actually get's larger when you filter it through JSON.  What happens is that some classes (CountVectorizers, etc) contain all of the context including Vocabulary.
+            ret['D. vars'] = the_vars
+        else:
+            ret['D. vars'] = 'vars() too long.  You will have to load object and review manually'
 
 
     if hasattr(transformer, 'estimator'):

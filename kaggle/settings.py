@@ -4,6 +4,8 @@ class Settings():
     def __init__(self):
         with open(os.path.join(os.pardir, 'SETTINGS.json')) as f:
             self.raw_json = json.load(f)
+
+        self.competiton_name = self.raw_json['competition_name']
         self.train_file_path = os.path.join(os.path.pardir, self.raw_json['data_directory_name'], self.raw_json['train_file'] )
         self.test_file_path = os.path.join(os.path.pardir, self.raw_json['data_directory_name'], self.raw_json['test_file'])
         self.saved_object_directory = os.path.join(os.path.curdir, self.raw_json['saved_object_directory_name'])

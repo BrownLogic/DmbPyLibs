@@ -9,11 +9,12 @@ from database import login_info
 from datetime import datetime
 import os
 from data_preparation import transformers
+import numpy as np
 
 _FILE_NAME_TEMPLATE = "R{run_id:06d}_{time_stamp:%Y%m%d_%H%M%S}_{type}_{obj_num:02d}"
 _RUN_TIME_STAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 _NOTE_TIME_STAMP_FORMAT = '%Y-%m-%d %H:%M:%S.%f' # Includes microseconds
-
+_MAX_ALLOWED_PACKET_SIZE = 500 * 1024 * 1024 #500MB
 
 class FileObjectType():
     """
@@ -24,6 +25,7 @@ class FileObjectType():
     train_target = 'train_target'
     feature_model = 'feature_model'
     predictor_model = 'predictor_model'
+    grid_search = 'grid_search'
     submission_file = 'submission'
 
     def __init__(self):
@@ -47,7 +49,7 @@ class PersistModel:
     When instantiated with a run_id, the context is loaded from the database
     Files and previously instantiated objects are loaded the first time they are requested.
     """
-    def __init__(self, object_file_location, connection=None,  run_id=None, start_time=None):
+    def __init__(self, object_file_location, project_name, connection=None,  run_id=None, start_time=None):
         """
         Initializes class
         :param connection: Open MySQLdb connection
@@ -63,6 +65,8 @@ class PersistModel:
         self._object_file_location = object_file_location
         self.start_time = start_time or datetime.now()
         self.scores = []
+        self.project_name = project_name
+        self.grid_scores = []
 
         if run_id:
             # load information from database
@@ -79,6 +83,7 @@ class PersistModel:
         self.save_all_objects()
         self.save_all_run_notes()
         self.save_all_scores()
+        self._save_all_grid_scores()
 
     def add_note(self, note, time_stamp=datetime.now()):
         """
@@ -89,13 +94,15 @@ class PersistModel:
     def add_score(self, score_type, score):
         self.scores.append((score_type, score))
 
+    def add_grid_scores(self, grid_scores):
+        self.grid_scores = grid_scores
 
     # todo:  consider what needs to happen on a 'resave'.  Version or replace?  Maybe only save 'new'
     def add_object_to_save(self, the_object, obj_type):
         """
-        Accepts a new item and addes it to the list.  Objects aren't saved
-        until save is called.
+        Accepts a new item and adds it to the list. Objects aren't saved until save is called.
         """
+
         self._objects_to_save.append(ObjectInfo(obj_type=obj_type, obj=the_object, obj_info=str(the_object)))
 
 
@@ -123,7 +130,7 @@ class PersistModel:
         Get's data from database.
         """
 
-        sql = ' SELECT run_time_stamp ' \
+        sql = ' SELECT project_name, run_time_stamp ' \
               ' FROM model_runs ' \
               ' WHERE run_id = {}'.format(self.run_id)
 
@@ -134,8 +141,7 @@ class PersistModel:
         #Expect only one record but might not get any
         if len(model_info) <> 1:
             raise Exception('Run_id {} not found or found too many times'.format(self.run_id))
-
-        self.start_time, = model_info[0] #First value of first tuple in the list
+        self.project_name, self.start_time = model_info[0]
         self._load_notes_from_database()
         self._load_object_info_from_database()
         self._load_scores_from_database()
@@ -207,11 +213,13 @@ class PersistModel:
         Adds a record to the database and returns the run id
         :return row_id: the row_id of the new model run
         """
+
         sql = " INSERT INTO model_runs " \
-              " (run_time_stamp) " \
-              " VALUES (%s)"
+              " (project_name, run_time_stamp) " \
+              " VALUES (%s, %s)"
         cursor = self._db.cursor()
-        cursor.execute(sql, [self.run_time_stamp() ])
+
+        cursor.execute(sql, [self.project_name, self.run_time_stamp() ])
         row_id = cursor.lastrowid
         cursor.close()
         self._db.commit()
@@ -265,7 +273,7 @@ class PersistModel:
         if obj_type in [FileObjectType.predictor_model, FileObjectType.feature_model]:
             ret = transformers.encode_transformer(obj_type, obj)
         else:
-            ret = type(obj)
+            ret = str(type(obj))
 
         return ret
 
@@ -276,6 +284,7 @@ class PersistModel:
         sql = " INSERT INTO model_run_object_info " \
               " ( run_id, sequence_num, obj_type, object_info, file_name ) " \
               " VALUES (%s, %s, %s, %s, %s)"
+
         cursor = self._db.cursor()
         cursor.execute(sql, [self.run_id, sequence_num, obj_type, self._get_string_representation_object_info(obj_type, obj), file_name])
         model_run_object_id = cursor.lastrowid
@@ -289,6 +298,7 @@ class PersistModel:
         """
         for score_type, score in self.scores:
             self._save_score(score_type, score)
+
     def save_all_run_notes(self):
         """
         Saves all of the notes in the collection to database.
@@ -297,7 +307,6 @@ class PersistModel:
             self._save_run_note(idx, timestamp, note)
 
 
-    # todo: Generalize submission save so that it doesn't rely on Pandas
     def _save_score(self, score_type, score):
         """
         Adds a record to the database and returns the score_id
@@ -332,6 +341,26 @@ class PersistModel:
         """
         return os.path.join(self._object_file_location, file_name)
 
+    def _save_grid_score(self, mean, std, params):
+        """
+        This function saves one grid score record to the database
+        :param mean: the mean_validation_score
+        :param std:  standard deviation of cv_validation_scores
+        :param params:  the parameters that resulted in the score
+        """
+        sql = " INSERT INTO grid_search_results " \
+              " (run_id, mean, std, params) " \
+              " VALUES (%s, %s, %s, %s) "
+        cursor = self._db.cursor()
+        cursor.execute(sql, [self.run_id, round(mean, 8), round(std, 8), params])
+        self._db.commit()
+
+
+    def _save_all_grid_scores(self):
+        for score in self.grid_scores:
+            self._save_grid_score(score.mean_validation_score,
+                                 np.std(score.cv_validation_scores),
+                                 str(score.parameters))
 
     def _get_file_name(self, object_type, obj_num):
         """
@@ -362,7 +391,21 @@ class PersistModel:
         """
         creates a MySQLdb.connection
         """
-        return MySQLdb.connect(**login_info)
+        ret = MySQLdb.connect(**login_info)
+        """
+        Some of the information in this get's big.  I need to check the value of max_global packet.  If it's already bigger, leave it.  If it's smaller, update
+        """
+        sql = 'select @@global.max_allowed_packet'
+
+        cursor = ret.cursor()
+        cursor.execute(sql)
+        max_allowed_packet_value = cursor.fetchone()
+        if max_allowed_packet_value < _MAX_ALLOWED_PACKET_SIZE:
+            sql = 'SET @@global.max_allowed_packet = {}'.format(_MAX_ALLOWED_PACKET_SIZE)
+            cursor.execute(sql)
+
+        return ret
+
 
 
     def _get_start_date_from_run_time_stamp(self, run_time_stamp):
